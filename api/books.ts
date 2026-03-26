@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Anthropic from "@anthropic-ai/sdk";
-import { YoutubeTranscript } from "youtube-transcript";
 
 // --- Video ID extraction ---
 function extractVideoId(url: string): string | null {
@@ -16,9 +15,10 @@ function extractVideoId(url: string): string | null {
 
 // --- Transcript ---
 async function fetchTranscript(videoId: string): Promise<string> {
+  const { YoutubeTranscript } = await import("youtube-transcript");
   const segments = await YoutubeTranscript.fetchTranscript(videoId);
   if (!segments || segments.length === 0) throw new Error("NO_TRANSCRIPT");
-  return segments.map((s) => s.text).join(" ");
+  return segments.map((s: { text: string }) => s.text).join(" ");
 }
 
 // --- Claude ---
