@@ -14,55 +14,27 @@ function extractVideoId(url: string): string | null {
 }
 
 // --- Transcript ---
-// Uses YouTube's internal Innertube API (/youtubei/v1/player) which is more
-// reliable from server environments than scraping the HTML page.
+// Uses Supadata API which handles YouTube's datacenter IP restrictions.
 async function fetchTranscript(videoId: string): Promise<string> {
-  // Step 1: Get caption track list via Innertube player API
-  const playerRes = await fetch(
-    "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        videoId,
-        context: {
-          client: { clientName: "WEB", clientVersion: "2.20231121.05.00" },
-        },
-      }),
-    }
+  const apiKey = process.env.SUPADATA_API_KEY;
+  if (!apiKey) throw new Error("SUPADATA_API_KEY environment variable is not set");
+
+  const res = await fetch(
+    `https://api.supadata.ai/v1/youtube/transcript?url=https://www.youtube.com/watch?v=${videoId}&lang=en`,
+    { headers: { "x-api-key": apiKey } }
   );
 
-  if (!playerRes.ok) throw new Error("NO_TRANSCRIPT");
+  if (res.status === 404 || res.status === 422) throw new Error("NO_TRANSCRIPT");
+  if (!res.ok) throw new Error(`Supadata error: ${res.status}`);
 
-  const playerData = await playerRes.json() as {
-    captions?: {
-      playerCaptionsTracklistRenderer?: {
-        captionTracks?: { baseUrl: string; languageCode: string }[];
-      };
-    };
+  const data = await res.json() as {
+    content?: { text: string }[];
+    error?: string;
   };
 
-  const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-  if (!tracks || tracks.length === 0) throw new Error("NO_TRANSCRIPT");
+  if (!data.content || data.content.length === 0) throw new Error("NO_TRANSCRIPT");
 
-  // Prefer English, fall back to first available track
-  const track = tracks.find((t) => t.languageCode === "en") ?? tracks[0];
-
-  // Step 2: Fetch the caption XML and parse text
-  const captionRes = await fetch(`${track.baseUrl}&fmt=json3`);
-  if (!captionRes.ok) throw new Error("NO_TRANSCRIPT");
-
-  const captionData = await captionRes.json() as {
-    events?: { segs?: { utf8: string }[] }[];
-  };
-
-  const texts = (captionData.events ?? [])
-    .flatMap((e) => e.segs ?? [])
-    .map((s) => s.utf8.replace(/\n/g, " "))
-    .filter((t) => t.trim());
-
-  if (texts.length === 0) throw new Error("NO_TRANSCRIPT");
-  return texts.join(" ");
+  return data.content.map((s) => s.text).join(" ");
 }
 
 // --- Claude ---
