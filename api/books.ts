@@ -14,11 +14,52 @@ function extractVideoId(url: string): string | null {
 }
 
 // --- Transcript ---
+// Fetches transcript directly from YouTube with browser-like headers,
+// bypassing IP restrictions that affect the youtube-transcript package on cloud servers.
 async function fetchTranscript(videoId: string): Promise<string> {
-  const { YoutubeTranscript } = await import("youtube-transcript");
-  const segments = await YoutubeTranscript.fetchTranscript(videoId);
-  if (!segments || segments.length === 0) throw new Error("NO_TRANSCRIPT");
-  return segments.map((s: { text: string }) => s.text).join(" ");
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  };
+
+  const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { headers });
+  if (!pageRes.ok) throw new Error("NO_TRANSCRIPT");
+
+  const html = await pageRes.text();
+
+  // Extract captions track list from the embedded player response JSON
+  const captionsMatch = html.split('"captions":');
+  if (captionsMatch.length < 2) throw new Error("NO_TRANSCRIPT");
+
+  let captionsJson: { playerCaptionsTracklistRenderer?: { captionTracks?: { baseUrl: string; languageCode: string }[] } };
+  try {
+    captionsJson = JSON.parse(captionsMatch[1].split(',"videoDetails')[0].replace(/\n/g, ""));
+  } catch {
+    throw new Error("NO_TRANSCRIPT");
+  }
+
+  const tracks = captionsJson?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!tracks || tracks.length === 0) throw new Error("NO_TRANSCRIPT");
+
+  // Prefer English, fall back to first available track
+  const track = tracks.find((t) => t.languageCode === "en") ?? tracks[0];
+
+  const captionRes = await fetch(track.baseUrl, { headers });
+  if (!captionRes.ok) throw new Error("NO_TRANSCRIPT");
+
+  const xml = await captionRes.text();
+  const texts = Array.from(xml.matchAll(/<text[^>]*>([^<]*)<\/text>/g))
+    .map((m) => m[1]
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&#39;/g, "'")
+      .replace(/&quot;/g, '"')
+    );
+
+  if (texts.length === 0) throw new Error("NO_TRANSCRIPT");
+  return texts.join(" ");
 }
 
 // --- Claude ---
