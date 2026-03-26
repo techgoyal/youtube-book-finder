@@ -14,49 +14,52 @@ function extractVideoId(url: string): string | null {
 }
 
 // --- Transcript ---
-// Fetches transcript directly from YouTube with browser-like headers,
-// bypassing IP restrictions that affect the youtube-transcript package on cloud servers.
+// Uses YouTube's internal Innertube API (/youtubei/v1/player) which is more
+// reliable from server environments than scraping the HTML page.
 async function fetchTranscript(videoId: string): Promise<string> {
-  const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  // Step 1: Get caption track list via Innertube player API
+  const playerRes = await fetch(
+    "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        videoId,
+        context: {
+          client: { clientName: "WEB", clientVersion: "2.20231121.05.00" },
+        },
+      }),
+    }
+  );
+
+  if (!playerRes.ok) throw new Error("NO_TRANSCRIPT");
+
+  const playerData = await playerRes.json() as {
+    captions?: {
+      playerCaptionsTracklistRenderer?: {
+        captionTracks?: { baseUrl: string; languageCode: string }[];
+      };
+    };
   };
 
-  const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { headers });
-  if (!pageRes.ok) throw new Error(`PAGE_FETCH_FAILED:${pageRes.status}`);
-
-  const html = await pageRes.text();
-
-  // Extract captions track list from the embedded player response JSON
-  const captionsMatch = html.split('"captions":');
-  if (captionsMatch.length < 2) throw new Error(`NO_CAPTIONS_KEY:html_length=${html.length}`);
-
-  let captionsJson: { playerCaptionsTracklistRenderer?: { captionTracks?: { baseUrl: string; languageCode: string }[] } };
-  try {
-    captionsJson = JSON.parse(captionsMatch[1].split(',"videoDetails')[0].replace(/\n/g, ""));
-  } catch (e) {
-    throw new Error(`PARSE_FAILED:${String(e).slice(0, 100)}`);
-  }
-
-  const tracks = captionsJson?.playerCaptionsTracklistRenderer?.captionTracks;
+  const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
   if (!tracks || tracks.length === 0) throw new Error("NO_TRANSCRIPT");
 
   // Prefer English, fall back to first available track
   const track = tracks.find((t) => t.languageCode === "en") ?? tracks[0];
 
-  const captionRes = await fetch(track.baseUrl, { headers });
+  // Step 2: Fetch the caption XML and parse text
+  const captionRes = await fetch(`${track.baseUrl}&fmt=json3`);
   if (!captionRes.ok) throw new Error("NO_TRANSCRIPT");
 
-  const xml = await captionRes.text();
-  const texts = Array.from(xml.matchAll(/<text[^>]*>([^<]*)<\/text>/g))
-    .map((m) => m[1]
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&#39;/g, "'")
-      .replace(/&quot;/g, '"')
-    );
+  const captionData = await captionRes.json() as {
+    events?: { segs?: { utf8: string }[] }[];
+  };
+
+  const texts = (captionData.events ?? [])
+    .flatMap((e) => e.segs ?? [])
+    .map((s) => s.utf8.replace(/\n/g, " "))
+    .filter((t) => t.trim());
 
   if (texts.length === 0) throw new Error("NO_TRANSCRIPT");
   return texts.join(" ");
@@ -149,8 +152,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.json({ books: booksWithLinks, videoTitle: "" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    if (message === "NO_TRANSCRIPT" || message.toLowerCase().includes("transcript") || message.startsWith("NO_") || message.startsWith("PAGE_") || message.startsWith("PARSE_")) {
-      return res.status(422).json({ error: "This video has no available transcript.", debug: message });
+    if (message === "NO_TRANSCRIPT" || message.toLowerCase().includes("transcript")) {
+      return res.status(422).json({ error: "This video has no available transcript." });
     }
     if (message.toLowerCase().includes("anthropic") || message.toLowerCase().includes("claude")) {
       return res.status(502).json({ error: "Failed to analyze transcript. Please try again." });
