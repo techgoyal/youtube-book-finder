@@ -24,19 +24,19 @@ async function fetchTranscript(videoId: string): Promise<string> {
   };
 
   const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { headers });
-  if (!pageRes.ok) throw new Error("NO_TRANSCRIPT");
+  if (!pageRes.ok) throw new Error(`PAGE_FETCH_FAILED:${pageRes.status}`);
 
   const html = await pageRes.text();
 
   // Extract captions track list from the embedded player response JSON
   const captionsMatch = html.split('"captions":');
-  if (captionsMatch.length < 2) throw new Error("NO_TRANSCRIPT");
+  if (captionsMatch.length < 2) throw new Error(`NO_CAPTIONS_KEY:html_length=${html.length}`);
 
   let captionsJson: { playerCaptionsTracklistRenderer?: { captionTracks?: { baseUrl: string; languageCode: string }[] } };
   try {
     captionsJson = JSON.parse(captionsMatch[1].split(',"videoDetails')[0].replace(/\n/g, ""));
-  } catch {
-    throw new Error("NO_TRANSCRIPT");
+  } catch (e) {
+    throw new Error(`PARSE_FAILED:${String(e).slice(0, 100)}`);
   }
 
   const tracks = captionsJson?.playerCaptionsTracklistRenderer?.captionTracks;
@@ -149,8 +149,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.json({ books: booksWithLinks, videoTitle: "" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    if (message === "NO_TRANSCRIPT" || message.toLowerCase().includes("transcript")) {
-      return res.status(422).json({ error: "This video has no available transcript." });
+    if (message === "NO_TRANSCRIPT" || message.toLowerCase().includes("transcript") || message.startsWith("NO_") || message.startsWith("PAGE_") || message.startsWith("PARSE_")) {
+      return res.status(422).json({ error: "This video has no available transcript.", debug: message });
     }
     if (message.toLowerCase().includes("anthropic") || message.toLowerCase().includes("claude")) {
       return res.status(502).json({ error: "Failed to analyze transcript. Please try again." });
