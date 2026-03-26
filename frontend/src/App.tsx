@@ -7,6 +7,7 @@ interface Book {
   title: string;
   author: string;
   context: string;
+  amazonUrl: string;
 }
 
 type AppState =

@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { extractVideoId } from "../utils/youtube";
 import { fetchTranscript } from "../services/transcript";
 import { extractBooks } from "../services/claude";
+import { getAmazonUrl } from "../services/amazon";
 
 const router = Router();
 
@@ -30,7 +31,14 @@ router.post("/", async (req: Request, res: Response) => {
       });
     }
 
-    return res.json({ books, videoTitle: "" });
+    const booksWithLinks = await Promise.all(
+      books.map(async (book) => ({
+        ...book,
+        amazonUrl: await getAmazonUrl(book.title, book.author),
+      }))
+    );
+
+    return res.json({ books: booksWithLinks, videoTitle: "" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
 
